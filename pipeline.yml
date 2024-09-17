@@ -1,0 +1,87 @@
+strategy:
+  matrix:
+    windows:
+      imageName: 'windows-latest'
+
+pool:
+  vmImage: $(imageName)
+
+variables:
+- task: PublishBuildArtifacts@1
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+    ArtifactName: 'drop'
+    publishLocation: 'FilePath'
+    TargetPath: '\\COMPAQ-NC6220\Public\'
+    StoreAsTar: true
+  buildConfiguration: 'Release'
+  version: 8.0
+
+steps:
+- task: UseDotNet@2
+  displayName: Installing .NET 8
+  inputs:
+    packageType: 'sdk'
+    version: '8.x'
+    installationPath: $(Agent.ToolsDirectory)/dotnet
+
+- task: PowerShell@2
+  displayName: Set Build Number
+  condition: and(succeeded(), eq(variables['Build.SourceBranchName'], 'main'))
+  inputs:
+    targetType: 'inline'
+    script: |
+      Write-Host "##vso[build.updatebuildnumber]${{ variables.version }}.$(Build.BuildId)"
+
+- task: DotNetCoreCLI@2
+  displayName: Restoring Packages for Solution
+  inputs:
+    command: restore
+    projects: '**/*.sln'
+
+- script: 'echo -e "$(Build.BuildNumber)\n$(Build.BuildId)" > .buildinfo.json'
+  condition: and(always(), eq(variables['imageName'], 'ubuntu-latest'))
+  displayName: "Emit build number"
+  workingDirectory: '$(Build.SourcesDirectory)/source/DasBlog.Web.UI'
+  failOnStderr: true
+  
+- task: DotNetCoreCLI@2
+  displayName: Building Solution
+  inputs:
+    command: build
+    projects: '**/*.sln'
+    arguments: '--no-restore --configuration $(BuildConfiguration) -p:VersionPrefix=$(Build.BuildNumber) -p:FileVersion=$(Build.BuildNumber).0 -p:SourceRevisionId=$(Build.SourceVersion)'
+
+- script: dotnet test source/DasBlog.Tests/UnitTests/ --logger trx;LogfileName=test_results.xml --results-directory $(System.DefaultWorkingDirectory)/test_results --filter Category=UnitTest
+  displayName: Run Unit Tests on Windows
+  condition: and(succeeded(), eq(variables['imageName'], 'windows-latest'))
+
+- task: PublishTestResults@2
+  displayName: Publish Test Results
+  condition: and(always(), eq(variables['imageName'], 'windows-latest'))
+  inputs:
+    testRunner: VSTest
+    testResultsFiles: '**/*.xml'
+    searchFolder: '$(System.DefaultWorkingDirectory)/test_results'
+
+- task: DotNetCoreCLI@2
+  inputs:
+    command: publish
+    publishWebProjects: True
+    zipAfterPublish: false
+    modifyOutputPath: false
+    arguments: '--configuration $(BuildConfiguration) --output $(Build.ArtifactStagingDirectory)/$(System.TeamProject)_$(Build.BuildNumber) '
+
+- task: ArchiveFiles@2
+  inputs:
+    rootFolderOrFile: $(Build.ArtifactStagingDirectory)/$(System.TeamProject)_$(Build.BuildNumber)
+    archiveType: 'zip'
+    includeRootFolder: false
+    archiveFile: '$(Build.ArtifactStagingDirectory)/$(System.TeamProject)_$(Build.BuildNumber).zip'
+    replaceExistingArchive: true
+
+- task: PublishPipelineArtifact@1
+  condition: and(succeeded(), eq(variables['imageName'], 'windows-latest'))
+  inputs:
+    targetPath: '$(Build.ArtifactStagingDirectory)/$(System.TeamProject)_$(Build.BuildNumber).zip'
+    artifactName: $(System.TeamProject)_$(Build.BuildNumber)
